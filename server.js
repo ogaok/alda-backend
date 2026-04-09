@@ -11,35 +11,29 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-  origin: '*', // In production, specify allowed origins
+  origin: '*',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting (basic implementation)
+// Rate limiting
 const rateLimitMap = new Map();
-const RATE_LIMIT = 10; // requests per hour
-const RATE_WINDOW = 60 * 60 * 1000; // 1 hour
+const RATE_LIMIT = 10;
+const RATE_WINDOW = 60 * 60 * 1000;
 
 function checkRateLimit(apiKey) {
   const now = Date.now();
   const userRequests = rateLimitMap.get(apiKey) || [];
-  
-  // Clean old requests
   const recentRequests = userRequests.filter(time => now - time < RATE_WINDOW);
-  
-  if (recentRequests.length >= RATE_LIMIT) {
-    return false;
-  }
-  
+  if (recentRequests.length >= RATE_LIMIT) return false;
   recentRequests.push(now);
   rateLimitMap.set(apiKey, recentRequests);
   return true;
 }
 
-// Educational frameworks for analysis
+// Educational frameworks
 const FRAMEWORKS = {
   bloom: {
     name: "Bloom's Taxonomy",
@@ -171,25 +165,25 @@ const FRAMEWORKS = {
         name: '★ ALDA Certified',
         scoreRange: '77-85 pts (90%+)',
         requirement: 'All ⚓ Anchors met',
-        description: 'Exemplary instructional design. The course demonstrates evidence of rigorous, learner-centered design across all Seven Pillars.'
+        description: 'Exemplary instructional design.'
       },
       {
         name: 'High Distinction',
         scoreRange: '68-76 pts (80-89%)',
         requirement: 'All ⚓ Anchors met',
-        description: 'Strong instructional quality with specific areas for targeted enhancement. Minor improvements will elevate to Certified.'
+        description: 'Strong instructional quality with specific areas for targeted enhancement.'
       },
       {
         name: 'Developing',
         scoreRange: '51-67 pts (60-79%)',
         requirement: 'May have Anchor gaps',
-        description: 'Foundational design elements present but multiple Pillars require substantive improvement.'
+        description: 'Foundational design elements present but multiple Pillars require improvement.'
       },
       {
         name: 'Needs Redesign',
         scoreRange: 'Below 51 pts OR any ⚓ Anchor unmet',
         requirement: 'Critical failures present',
-        description: 'One or more critical design failures are present. Targeted redesign addressing all unmet Anchors is recommended.'
+        description: 'One or more critical design failures present. Targeted redesign recommended.'
       }
     ]
   },
@@ -205,193 +199,197 @@ const FRAMEWORKS = {
   }
 };
 
-// Health check endpoint
+// ── Health check ─────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
+  res.json({
+    status: 'healthy',
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '2.0.0'
   });
 });
 
-// Main analysis endpoint
+// ── Analysis endpoint ─────────────────────────────────────────────
 app.post('/api/analyze', async (req, res) => {
   try {
-    // Extract API key from Authorization header
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        error: 'Missing or invalid authorization header' 
-      });
+      return res.status(401).json({ error: 'Missing or invalid authorization header' });
     }
-    
+
     const apiKey = authHeader.substring(7);
-    
-    // Check rate limit
+
     if (!checkRateLimit(apiKey)) {
-      return res.status(429).json({ 
-        error: 'Rate limit exceeded. Please try again later.' 
-      });
+      return res.status(429).json({ error: 'Rate limit exceeded. Please try again later.' });
     }
-    
+
     const { lmsType, courseData, context, depth, frameworks } = req.body;
-    
-    // Validate input
+
     if (!courseData) {
-      return res.status(400).json({ 
-        error: 'Missing course data' 
-      });
+      return res.status(400).json({ error: 'Missing course data' });
     }
-    
+
     console.log(`Analyzing ${lmsType} course: ${context?.courseName || 'Unknown'}`);
-    
-    // Initialize OpenAI
+
+    // FIX 1: sanitize courseData to prevent oversized prompts
+    const safeCourseData = {
+      title:       courseData.title || 'Untitled',
+      objectives:  courseData.objectives || '',
+      userMessage: courseData.userMessage || '',
+      conversationHistory: courseData.conversationHistory || '',
+      modules: (courseData.modules || []).slice(0, 15).map(m => ({
+        title: m.title || m.name || 'Untitled module',
+        itemCount: m.itemCount || (m.items?.length) || 0,
+        items: (m.items || []).slice(0, 5),
+      })),
+      assignments: (courseData.assignments || []).slice(0, 15).map(a => ({
+        title: a.title || 'Untitled',
+      })),
+      pageCount:    courseData.pageCount || 0,
+      customCriteria: courseData.customCriteria || [],
+    };
+
     const openai = new OpenAI({ apiKey });
-    
-    // Build analysis prompt
-    const prompt = buildAnalysisPrompt(courseData, lmsType, frameworks, depth);
-    
-    // Call OpenAI API
+    const activeFrameworks = frameworks || ['aiqf', 'bloom'];
+    const prompt = buildAnalysisPrompt(safeCourseData, lmsType, activeFrameworks, depth);
+
+    // FIX 2: updated model name
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
+      model: 'gpt-4o',
       messages: [
-        {
-          role: 'system',
-          content: getSystemPrompt(frameworks)
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
+        { role: 'system', content: getSystemPrompt(activeFrameworks) },
+        { role: 'user',   content: prompt }
       ],
       temperature: 0.7,
       max_tokens: depth === 'deep' ? 4000 : depth === 'standard' ? 2000 : 1000,
       response_format: { type: 'json_object' }
     });
-    
+
     const analysisResult = JSON.parse(completion.choices[0].message.content);
-    
-    // Structure response
+
     const response = {
+      aiqf:        analysisResult.aiqf || null,
       scores: {
-        structure: analysisResult.scores?.structure || 0,
+        structure:  analysisResult.scores?.structure  || 0,
         engagement: analysisResult.scores?.engagement || 0,
         assessment: analysisResult.scores?.assessment || 0
       },
       suggestions: analysisResult.suggestions || [],
-      summary: analysisResult.summary || '',
-      timestamp: new Date().toISOString(),
-      tokensUsed: completion.usage.total_tokens
+      summary:     analysisResult.summary || '',
+      timestamp:   new Date().toISOString(),
+      tokensUsed:  completion.usage.total_tokens
     };
-    
-    console.log(`Analysis complete. Generated ${response.suggestions.length} suggestions.`);
-    
+
+    console.log(`Analysis complete. Suggestions: ${response.suggestions.length}. Tokens: ${response.tokensUsed}`);
     res.json(response);
-    
+
   } catch (error) {
-    console.error('Analysis error:', error);
-    
+    // FIX 3: log and return the real error message
+    console.error('Analysis error:', error.message, '| code:', error.code, '| status:', error.status);
+
     if (error.code === 'invalid_api_key') {
-      return res.status(401).json({ 
-        error: 'Invalid OpenAI API key' 
-      });
+      return res.status(401).json({ error: 'Invalid OpenAI API key. Check the key entered in ALDA settings.' });
     }
-    
     if (error.code === 'rate_limit_exceeded') {
-      return res.status(429).json({ 
-        error: 'OpenAI rate limit exceeded. Please try again later.' 
-      });
+      return res.status(429).json({ error: 'OpenAI rate limit exceeded. Please try again shortly.' });
     }
-    
-    res.status(500).json({ 
-      error: 'Analysis failed. Please try again.' 
-    });
+    if (error.code === 'model_not_found') {
+      return res.status(500).json({ error: 'OpenAI model not found. Contact support.' });
+    }
+    if (error.code === 'insufficient_quota') {
+      return res.status(402).json({ error: 'OpenAI quota exceeded. Check your OpenAI billing.' });
+    }
+
+    res.status(500).json({ error: error.message || 'Analysis failed. Please try again.' });
   }
 });
 
-// Course builder endpoint
+// ── Build endpoint ────────────────────────────────────────────────
 app.post('/api/build', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        error: 'Missing or invalid authorization header' 
-      });
+      return res.status(401).json({ error: 'Missing or invalid authorization header' });
     }
-    
+
     const apiKey = authHeader.substring(7);
-    
-    // Check rate limit
+
     if (!checkRateLimit(apiKey)) {
-      return res.status(429).json({ 
-        error: 'Rate limit exceeded. Please try again later.' 
-      });
+      return res.status(429).json({ error: 'Rate limit exceeded. Please try again later.' });
     }
-    
+
     const { mode, lmsType, context, specifications } = req.body;
-    
     console.log(`Building course in ${mode} mode for ${lmsType}`);
-    
-    // Initialize OpenAI
+
     const openai = new OpenAI({ apiKey });
-    
-    // Build course generation prompt
     const prompt = buildCoursePrompt(mode, specifications, lmsType);
-    
+
+    // FIX 2: updated model name
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
+      model: 'gpt-4o',
       messages: [
-        {
-          role: 'system',
-          content: getCourseBuilderSystemPrompt()
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
+        { role: 'system', content: getCourseBuilderSystemPrompt() },
+        { role: 'user',   content: prompt }
       ],
       temperature: 0.8,
       max_tokens: 3000,
       response_format: { type: 'json_object' }
     });
-    
+
     const courseStructure = JSON.parse(completion.choices[0].message.content);
-    
+
     res.json({
       courseStructure,
-      timestamp: new Date().toISOString(),
+      timestamp:  new Date().toISOString(),
       tokensUsed: completion.usage.total_tokens
     });
-    
+
   } catch (error) {
-    console.error('Course build error:', error);
-    res.status(500).json({ 
-      error: 'Course building failed. Please try again.' 
-    });
+    // FIX 3: return real error message
+    console.error('Build error:', error.message, '| code:', error.code);
+
+    if (error.code === 'invalid_api_key') {
+      return res.status(401).json({ error: 'Invalid OpenAI API key. Check the key entered in ALDA settings.' });
+    }
+    if (error.code === 'insufficient_quota') {
+      return res.status(402).json({ error: 'OpenAI quota exceeded. Check your OpenAI billing.' });
+    }
+
+    res.status(500).json({ error: error.message || 'Course building failed. Please try again.' });
   }
 });
 
-// Helper: Build analysis prompt
+// ── Prompt builders ───────────────────────────────────────────────
 function buildAnalysisPrompt(courseData, lmsType, frameworks, depth) {
   const frameworkDescriptions = frameworks
     .map(fw => `- ${FRAMEWORKS[fw]?.name || fw}: ${FRAMEWORKS[fw]?.description || ''}`)
     .join('\n');
-  
+
   const includesAIQF = frameworks.includes('aiqf');
-  
+
+  // include conversation context if present
+  const conversationContext = courseData.conversationHistory
+    ? `\nConversation history:\n${courseData.conversationHistory}\n`
+    : '';
+  const userMessage = courseData.userMessage
+    ? `\nUser's specific question: ${courseData.userMessage}\n`
+    : '';
+
   return `
-Analyze this ${lmsType} course and provide pedagogical recommendations.
+Analyze this ${lmsType || 'online'} course and provide pedagogical recommendations.
 
-Course Data:
-${JSON.stringify(courseData, null, 2)}
+Course: ${courseData.title}
+Modules (${courseData.modules.length}): ${courseData.modules.map(m => m.title).join(', ')}
+Assignments (${courseData.assignments.length}): ${courseData.assignments.map(a => a.title).join(', ')}
+Learning objectives: ${courseData.objectives || 'Not provided'}
+Page count: ${courseData.pageCount}
+${conversationContext}${userMessage}
+Analysis depth: ${depth || 'standard'}
 
-Analysis Depth: ${depth}
-
-Apply these educational frameworks:
+Frameworks to apply:
 ${frameworkDescriptions}
 
 ${includesAIQF ? `
-IMPORTANT: Include AIQF Seven Pillars analysis with:
+IMPORTANT — Include AIQF Seven Pillars analysis:
 - P1: Clarity of Purpose (max 13 pts)
 - P2: Outcome Architecture (max 13 pts)
 - P3: Evidence Design (max 13 pts)
@@ -399,12 +397,10 @@ IMPORTANT: Include AIQF Seven Pillars analysis with:
 - P5: Active Meaning-Making (max 12 pts)
 - P6: Equitable Access (max 12 pts)
 - P7: Adaptive Coherence (max 10 pts)
-
-Score each pillar and identify unmet Anchor Indicators (⚓) vs Guide Indicators (◈).
-Total possible: 85 points across all Seven Pillars.
+Total possible: 85 points.
 ` : ''}
 
-Provide your analysis in JSON format with:
+Return JSON:
 {
   ${includesAIQF ? `"aiqf": {
     "totalScore": <0-85>,
@@ -419,136 +415,89 @@ Provide your analysis in JSON format with:
       "p6_access": <0-12>,
       "p7_coherence": <0-10>
     },
-    "unmetAnchors": ["P1-A1", "P2-A3", ...],
-    "allAnchorsMetAIQF true/false
+    "unmetAnchors": ["P1-A1"],
+    "allAnchorsMet": true
   },` : ''}
-  "scores": {
-    "structure": <0-100>,
-    "engagement": <0-100>,
-    "assessment": <0-100>
-  },
+  "scores": { "structure": <0-100>, "engagement": <0-100>, "assessment": <0-100> },
   "suggestions": [
     {
-      "title": "Brief title",
-      "description": "Detailed explanation with specific pedagogical rationale",
+      "title": "string",
+      "description": "string",
       "priority": "high|medium|low",
-      "framework": "bloom|addie|aiqf|ubd|solo",
-      ${includesAIQF ? `"pillar": "P1|P2|P3|P4|P5|P6|P7",
-      "indicatorType": "anchor|guide",
-      "indicatorId": "P1-A1|P2-G1|etc",` : ''}
-      "action": {
-        "label": "Action button text",
-        "type": "add|modify|remove",
-        "target": "modules|assignments|assessments|content|activities"
-      }
+      "framework": "aiqf|bloom",
+      "pillar": "P1|P2|P3|P4|P5|P6|P7",
+      "action": { "label": "string", "type": "add|modify|remove", "target": "string" }
     }
   ],
   "summary": "2-3 sentence overall assessment"
+}`;
 }
 
-Focus on actionable, specific recommendations that improve learning outcomes.
-${includesAIQF ? 'Prioritize unmet Anchor Indicators (⚓) as high priority, Guide Indicators (◈) as medium/low.' : ''}
-`;
-}
-
-// Helper: System prompt for analysis
 function getSystemPrompt(frameworks) {
-  return `You are ALDA (AI Learning Design Assistant), an expert instructional designer with deep knowledge of pedagogical frameworks including Bloom's Taxonomy, ADDIE, Seven Pillars Instructional Quality Framework (AIQF), Understanding by Design, and SOLO Taxonomy.
+  return `You are ALDA (AI Learning Design Assistant), an expert instructional designer specialising in the Seven Pillars Instructional Quality Framework (AIQF v2.0).
 
-The ALDA Instructional Quality Framework (AIQF) is your primary evaluation tool. It organizes instructional quality around Seven Pillars:
+Seven Pillars:
+P1. Clarity of Purpose (13 pts) — learner orientation and course entry clarity
+P2. Outcome Architecture (13 pts) — measurable, progressive learning objectives
+P3. Evidence Design (13 pts) — assessment alignment and criteria transparency
+P4. Knowledge Pathways (12 pts) — content sequencing and scaffolding
+P5. Active Meaning-Making (12 pts) — application, discussion, higher-order tasks
+P6. Equitable Access (12 pts) — accessibility, multi-modal content, inclusion
+P7. Adaptive Coherence (10 pts) — course integration, feedback loops, iteration
 
-P1. Clarity of Purpose (13 pts): Does the learner know what they're entering, why it matters, and what they need to succeed?
-P2. Outcome Architecture (13 pts): Are learning outcomes structured as a coherent, progressive system?
-P3. Evidence Design (13 pts): Is the assessment system rigorous, transparent, and aligned to outcomes?
-P4. Knowledge Pathways (12 pts): Does content guide learners forward or simply accumulate?
-P5. Active Meaning-Making (12 pts): Is the learner constructing understanding or passively consuming?
-P6. Equitable Access (12 pts): Can every learner access and engage with this course?
-P7. Adaptive Coherence (10 pts): Does the course function as an integrated system?
+Quality tiers: ALDA Certified (77-85), High Distinction (68-76), Developing (51-67), Needs Redesign (<51 or any Anchor unmet).
 
-Total: 7 Pillars, 38 Indicators (20 Anchors ⚓ worth 3 pts each, 18 Guides ◈ worth 2 pts each), maximum 85 points.
-
-Quality Tiers:
-- ★ ALDA Certified: 77-85 pts (90%+) AND all Anchors met - Exemplary design
-- High Distinction: 68-76 pts (80-89%) AND all Anchors met - Strong quality
-- Developing: 51-67 pts (60-79%) - Foundational elements present
-- Needs Redesign: Below 51 pts OR any Anchor unmet - Critical failures present
-
-Your role is to analyze course structures and provide actionable recommendations that:
-1. Align with evidence-based educational practices across all frameworks
-2. Improve student learning outcomes
-3. Enhance engagement and accessibility
-4. Follow best practices for online and blended learning
-
-Evaluate against AIQF Pillars and provide specific, actionable suggestions with clear pedagogical rationale.
-Prioritize Anchor Indicators (critical for learning outcomes) over Guide Indicators (enhancement opportunities).
-Format all responses as valid JSON.`;
+Be specific, actionable, and grounded in pedagogical evidence. Format all responses as valid JSON.`;
 }
 
-// Helper: Build course generation prompt
 function buildCoursePrompt(mode, specifications, lmsType) {
   return `
-${mode === 'new' ? 'Create a new course' : 'Enhance the existing course'} for ${lmsType} LMS.
+${mode === 'new' ? 'Create a new course' : 'Enhance the existing course'} for ${lmsType || 'online'} LMS.
 
 Specifications:
 ${JSON.stringify(specifications, null, 2)}
 
-Generate a complete course structure in JSON format with:
+Return JSON:
 {
-  "courseName": "Course title",
-  "description": "Course description",
-  "learningObjectives": ["objective1", "objective2"],
+  "courseName": "string",
+  "description": "string",
+  "learningObjectives": ["string"],
   "modules": [
     {
-      "name": "Module name",
-      "description": "Module description",
-      "learningObjectives": ["objective"],
+      "name": "string",
+      "description": "string",
+      "learningObjectives": ["string"],
       "content": [
-        {
-          "type": "lecture|reading|video|assignment|quiz",
-          "title": "Content title",
-          "description": "Content description",
-          "estimatedTime": "minutes"
-        }
+        { "type": "lecture|reading|video|assignment|quiz", "title": "string", "description": "string", "estimatedTime": "string" }
       ]
     }
   ],
   "assessments": [
-    {
-      "type": "quiz|assignment|project|discussion",
-      "title": "Assessment title",
-      "description": "Description",
-      "points": number,
-      "alignedObjectives": ["objective"]
-    }
+    { "type": "quiz|assignment|project|discussion", "title": "string", "description": "string", "points": 0, "alignedObjectives": ["string"] }
   ]
+}`;
 }
 
-Ensure pedagogical soundness and alignment with best practices.
-`;
-}
-
-// Helper: System prompt for course building
 function getCourseBuilderSystemPrompt() {
-  return `You are ALDA (AI Learning Design Assistant), an expert course designer specializing in creating pedagogically sound, engaging online courses.
+  return `You are ALDA (AI Learning Design Assistant), an expert course designer applying the Seven Pillars Instructional Quality Framework (AIQF v2.0).
 
-When designing courses:
-1. Use backward design (start with objectives, then assessments, then content)
-2. Ensure alignment between objectives, content, and assessments
+Design principles:
+1. Backward design — start with objectives, then assessments, then content
+2. Align all objectives, content, and assessments
 3. Include diverse content types for different learning styles
 4. Build in formative and summative assessments
 5. Design for accessibility and inclusivity
-6. Follow evidence-based practices for online learning
+6. Apply Active Meaning-Making — ensure learners apply, not just consume
 
-Always structure courses for maximum student engagement and learning outcomes.
 Format all responses as valid JSON.`;
 }
 
-// Start server
+// ── Start server ──────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 ALDA API Server running on port ${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`🎓 Analysis endpoint: http://localhost:${PORT}/api/analyze`);
-  console.log(`🏗️  Build endpoint: http://localhost:${PORT}/api/build`);
+  console.log(`🚀 ALDA API Server v2.0 running on port ${PORT}`);
+  console.log(`📊 Health: http://localhost:${PORT}/api/health`);
+  console.log(`🎓 Analyse: http://localhost:${PORT}/api/analyze`);
+  console.log(`🏗️  Build:   http://localhost:${PORT}/api/build`);
 });
 
 module.exports = app;
