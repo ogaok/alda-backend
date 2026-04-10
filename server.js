@@ -149,7 +149,7 @@ function getGeminiModel(apiKey) {
   if (!key) throw new Error('No Gemini API key. Set GEMINI_API_KEY in Render environment variables.');
   const genAI = new GoogleGenerativeAI(key);
   return genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.0-flash',
     generationConfig: { responseMimeType: 'application/json' },
   });
 }
