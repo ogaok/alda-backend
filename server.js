@@ -1,5 +1,5 @@
 // ALDA Backend API Server v2.1
-// AI provider: Google Gemini (gemini-1.5-flash)
+// AI provider: Google Gemini (gemini-2.5-flash)
 // Routes: GET /api/health  POST /api/analyze  POST /api/build
 
 const express = require('express');
@@ -21,7 +21,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── Rate limiting ─────────────────────────────────────────────────
 const rateLimitMap = new Map();
-const RATE_LIMIT = 50;
+const RATE_LIMIT = 200; // per hour per key — Gemini paid tier allows 2000 RPM
 const RATE_WINDOW = 60 * 60 * 1000;
 
 function checkRateLimit(key) {
@@ -149,17 +149,30 @@ function getGeminiModel(apiKey) {
   if (!key) throw new Error('No Gemini API key. Set GEMINI_API_KEY in Render environment variables.');
   const genAI = new GoogleGenerativeAI(key);
   return genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     generationConfig: { responseMimeType: 'application/json' },
   });
 }
 
-async function callGemini(model, systemPrompt, userPrompt) {
-  const result = await model.generateContent(systemPrompt + '\n\n' + userPrompt);
-  const text = result.response.text();
-  // strip any accidental markdown fences
-  const clean = text.replace(/```json|```/g, '').trim();
-  return JSON.parse(clean);
+async function callGemini(model, systemPrompt, userPrompt, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const result = await model.generateContent(systemPrompt + '\n\n' + userPrompt);
+      const text = result.response.text();
+      const clean = text.replace(/```json|```/g, '').trim();
+      return JSON.parse(clean);
+    } catch (err) {
+      const is429 = err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED');
+      if (is429 && attempt < retries) {
+        // exponential backoff: 2s, 4s, 8s
+        const wait = Math.pow(2, attempt) * 1000;
+        console.log(`[ALDA] Gemini 429 — retrying in ${wait/1000}s (attempt ${attempt}/${retries})`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 // ── Health check ──────────────────────────────────────────────────
@@ -167,7 +180,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
     version: '2.1.0',
-    ai: 'gemini-1.5-flash',
+    ai: 'gemini-2.5-flash',
     timestamp: new Date().toISOString()
   });
 });
